@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, user-scalable=no">
+        <title>Filter stats</title>
+        <style>
+            * {
+                box-sizing: border-box;
+                font-size: 1.15rem;
+                font-family: Arial, sans-serif;
+            }
+            html {
+                max-width: 800px;
+                padding: 3rem 1rem;
+                margin: auto;
+                line-height: 1.25;
+                padding: 0;
+            }
+            body {
+                margin: 3rem 1rem;
+            }
+            h1 {
+                font-size: 2rem;
+            }
+            h2 {
+                font-size: 1.5rem;
+            }
+            input {
+                line-height: 1.25;
+                width: 100%;
+                height: 1.8rem;
+                font-size: 1.15rem;
+                border: 1px solid grey;
+            }
+            .hidden {
+                display: none !important;
+            }
+            @media screen and (max-width: 600px) {
+            }
+        </style>
+        <script>
+            var $ = document.querySelector.bind( document );
+            var $$ = document.querySelectorAll.bind( document );
+            var url_params = new URLSearchParams( window.location.search );
+            var url_keys = url_params.keys();
+            var $_GET = {}
+            for ( var key of url_keys ) $_GET[ key ] = url_params.get( key );
+        </script>
+        <script>
+            function getData( url ) {
+                return new Promise( async function( resolve, reject ) {
+                    function inner_get( url ) {
+                        var xhttp = new XMLHttpRequest();
+                        xhttp.open( "GET", url, true );
+                        xhttp.send();
+                        return xhttp;
+                    }
+                    var data = inner_get( url );
+                    data.onerror = function( e ) {
+                        resolve( "error" );
+                    }
+                    async function isResponseReady() {
+                        return new Promise( function( resolve2, reject ) {
+                            if ( !data.responseText || data.readyState != 4 ) {
+                                setTimeout( async function() {
+                                    var msg = await isResponseReady();
+                                    resolve2( msg );
+                                }, 1 );
+                            } else {
+                                resolve2( data.responseText );
+                            }
+                        });
+                    }
+                    var returnable = await isResponseReady();
+                    resolve( returnable );
+                });
+            }
+            var waitSomeTime = num => new Promise( resolve => setTimeout( resolve, num ) );
+        </script>
+    </head>
+    <body>
+        <h1>Filter Sats</h1>
+        <p>Documenting the statistical effect of filters over time</p>
+        <hr>
+        <div class="loading">
+            <p>Loading most recent <span class="how_many_blocks">0</span> blocks</p>
+            <p><span class="cur_load">0</span> out of <span class="total_load"> loaded</span></p>
+            <p>Transactions in this block: <span class="tx_count"></span></p>
+            <p>Transactions loaded: <span class="txs_loaded"></span></p>
+            <p>Percent of lower-than-standard-fee txs: <span class="low_fee_percent">0.00</span>%</p>
+        </div>
+        <div class="block_info"></div>
+        <div class="source"><br><a href="https://github.com/supertestnet/tps-counter" target="_blank">Source code</a></div>
+        <script>
+            var blocks_to_count = 144;
+            var total_txs = 0;
+            var total_low_fee_txs = 0;
+            $( '.how_many_blocks' ).innerText = blocks_to_count;
+            $( '.total_load' ).innerText = blocks_to_count;
+            var source = "mempool.space" //alt: blockstream.info;
+            var all_txs = [];
+            var hashes = [];
+            var blocks_i_am_loading = [];
+            var load = async () => {
+                var tip = await getData( `https://${source}/api/blocks/tip/height` );
+                tip = Number( tip );
+                var i; for ( i=tip-blocks_to_count; i<tip; i++ ) {
+                    blocks_i_am_loading.push( i );
+                    var cur_load = blocks_to_count - ( tip - i - 1 );
+                    $( '.cur_load' ).innerText = cur_load;
+                    $( '.how_many_blocks' ).innerText = blocks_to_count;
+                    try {
+                        var hash = await getData( `https://${source}/api/block-height/${i}` );
+                    } catch (e) {
+                        var hash;
+                    }
+                    if ( !hash || hash == "error" ) continue;
+                    hashes.push( hash );
+                    var url = `https://${source}/api/block/${hash}`;
+                    var txs_in_this_block = [];
+                    try {
+                        var block_info = await getData( `https://${source}/api/block/${hash}` );
+                        var tx_count = JSON.parse( block_info ).tx_count;
+                        $( '.tx_count' ).innerText = tx_count;
+                        var index = 0;
+                        var loop = async() => {
+                            await waitSomeTime( 200 );
+                            $( '.txs_loaded' ).innerText = Math.min( index + 25, tx_count );
+                            var tx_url = `https://${source}/api/block/${hash}/txs/${index}`;
+                            var txs = await getData( tx_url );
+                            txs = JSON.parse( txs );
+                            if ( txs.length ) txs_in_this_block.push( ...txs );
+                            if ( index + 25 >= tx_count ) return txs_in_this_block;
+                            index = index + 25;
+                            return loop();
+                        }
+                        await loop();
+                        all_txs.push( txs_in_this_block );
+                    } catch (e) {
+                        var block_info = null;
+                    }
+                    if ( !block_info ) continue;
+                    try {
+                        block_info = JSON.parse( block_info );
+                    } catch (e) {
+                        var stop = true;
+                    }
+                    if ( stop ) continue;
+                    total_txs = total_txs + txs_in_this_block.length;
+                    var normal_fee_txs = 0;
+                    var low_fee_txs = [];
+                    txs_in_this_block.forEach( ( tx, idx ) => {
+                        if ( !idx ) return;
+                        var fee_per_vbyte = Number( ( tx.fee / ( tx.weight / 4 ) ).toFixed( 2 ) );
+                        if ( fee_per_vbyte >= 1 ) normal_fee_txs = normal_fee_txs + 1;
+                        else low_fee_txs.push( tx.txid );
+                    });
+                    var html = `
+                        <hr>
+                        <h2>Info about block ${i}</h2>
+                        <p>Number of transactions: ${tx_count}</p>
+                        <p>Transactions that pay above 1 sat per byte: ${normal_fee_txs + 1}</p>
+                        <p>List of transactions that paid less than that:</p>
+                        <p class="none">None</p>
+                        <ul class="list hidden"></ul>
+                    `;
+                    var div = document.createElement( "div" );
+                    div.classList.add( "info" );
+                    div.innerHTML = html;
+                    if ( low_fee_txs.length ) {
+                        total_low_fee_txs = total_low_fee_txs + low_fee_txs.length;
+                        div.getElementsByClassName( "none" )[ 0 ].classList.add( "hidden" );
+                        div.getElementsByClassName( "list" )[ 0 ].classList.remove( "hidden" );
+                        var j; for ( j=0; j<low_fee_txs.length; j++ ) {
+                            var li = document.createElement( "li" );
+                            var url = `https://${source}/tx/${low_fee_txs[ j ]}`;
+                            li.innerHTML = `<a href="${url}" target="_blank">${low_fee_txs[ j ]}</a>`;
+                            div.getElementsByClassName( "list" )[ 0 ].append( li );
+                        }
+                        div.getElementsByClassName( "list" )[ 0 ].classList.remove( "hidden" );
+                    }
+                    $( '.low_fee_percent' ).innerText = Number( ( ( total_low_fee_txs / total_txs ) * 100 ).toFixed( 2 ) );
+                    $( '.block_info' ).append( div );
+                }
+            }
+            load();
+        </script>
+    </body>
+</html> 
